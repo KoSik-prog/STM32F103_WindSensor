@@ -1,3 +1,4 @@
+import numpy as np
 import threading
 import serial
 import ast
@@ -23,8 +24,12 @@ class CONNECT:
             time.sleep(.5)
             self.zeroPoint = [self.global_ptX[0], self.global_ptY[0]]
 
-            ani = FuncAnimation(plt.gcf(), self.draw_chart, interval=100, save_count=10)
+            self.fig, self.ax = plt.subplots(subplot_kw={'projection': 'polar'})
+            self.quiver = None
+            self.bar = None
+            self.ani = FuncAnimation(self.fig, self.draw_chart, interval=100, save_count=10)
             plt.show()
+
         else:
             print(f"{Fore.RED}Can't connect with {self.port}")
 
@@ -54,26 +59,34 @@ class CONNECT:
         finally:
             self.ser.close()
 
-    def draw_chart(self, maxPoints = 70, lim = 5000):
-        if len(self.global_ptX) > maxPoints:
-            self.global_ptX = self.global_ptX[-maxPoints:]
-            self.global_ptY = self.global_ptY[-maxPoints:]
+    def draw_chart(self, frame):
+        if self.quiver:
+            self.quiver.remove()
+        if self.bar:
+            self.bar.remove()
 
-        if self.global_ptX and self.global_ptY:
-            plt.clf()
+        direction_rad = np.radians(self.points_to_direction(self.avgWind[0], self.avgWind[1]))
+        rotated_direction_rad = np.mod(np.radians(90) - direction_rad, 2 * np.pi)
 
-            plt.scatter(self.global_ptX, self.global_ptY, s=20, c='gray')
-            plt.scatter(self.avgWind[0], self.avgWind[1], s=100, c='red')
-            plt.scatter(0, 0, s=10, c='green')
+        self.bar = self.ax.bar(rotated_direction_rad, self.points_to_strength(self.avgWind[0], self.avgWind[1]), color='b', alpha=0.5, width=0.5, bottom=0)
 
-            print(f"Fluctuation X: {max(self.global_ptX) - min(self.global_ptX)} / Y: {max(self.global_ptY) - min(self.global_ptY)} AVG: {self.avgWind[0]} / {self.avgWind[1]}")
+        _, max_radius = self.ax.get_ylim()
+        self.quiver = self.ax.quiver(rotated_direction_rad, 0, 0, max_radius, angles='xy', scale_units='xy', scale=1, color='r', width=0.03)
 
-            plt.axis('on')
-            plt.grid(True)
-            plt.xlabel('X Axis')
-            plt.ylabel('Y Axis')
-            plt.title('Wind')
-            plt.xlim(-lim, lim)
-            plt.ylim(-lim, lim)
+        self.ax.set_theta_zero_location('N')
+        self.ax.set_theta_direction(-1)
 
+        return self.quiver, self.bar
+
+    def points_to_direction(self, x, y):
+        angle_rad = np.arctan2(y, x)
+        angle_deg = np.degrees(angle_rad)
+        strength = (angle_deg + 360) % 360
+        return strength
+    
+    def points_to_strength(self, x, y):
+        return np.sqrt(x**2 + y**2)
+
+            
+            
 conn = CONNECT('COM9', 115200)
