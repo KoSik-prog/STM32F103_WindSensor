@@ -5,122 +5,137 @@
  *      Author: Marcin Kosela (KoSik)
  *		e-mail: kosik84@gmail.com
  *		
- *	   version: 1.0
+ *	   version: 2.1
  */
-
 
 #include <stdlib.h>
 #include "stm32f1xx_hal.h"
 #include "main.h"
 #include "windSensor.h"
+#include "hx711.h"
+#include <string.h>
 
 struct WINDSENSOR windSensor;
 
+static int32_t calc_average(int32_t *dataArray, uint16_t arraySize);
+void quickSort(int32_t arr[], int low, int high);
+static int32_t calc_wind(int32_t *dataArray, uint16_t arraySize);
 
-HAL_StatusTypeDef windSensor_init(GPIO_TypeDef *xdtPort, uint16_t xdtPin,
-		GPIO_TypeDef *xsckPort, uint16_t xsckPin, GPIO_TypeDef *ydtPort,
-		uint16_t ydtPin, GPIO_TypeDef *ysckPort, uint16_t ysckPin){
-	int32_t data;
 
-	windSensor.xDtPort = xdtPort;
-	windSensor.xDtPin = xdtPin;
-	windSensor.xSckPort = xsckPort;
-	windSensor.xSckPin = xsckPin;
-	windSensor.yDtPort = ydtPort;
-	windSensor.yDtPin = ydtPin;
-	windSensor.ySckPort = ysckPort;
-	windSensor.ySckPin = ysckPin;
-	HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 0);
-	windSensor_readyForRetrieval();
-	data = windSensor_read();
-	windSensor_turnOff();
-	if(data != 0){
-		return HAL_OK;
-	} else {
-		return HAL_ERROR;
+/*
+ * Wind sensor init:
+ * @param *sensorX - pointer to first HX711 sensor
+ * @param *sensorY - pointer to second HX711 sensor
+ * @retval status
+ * */
+HAL_StatusTypeDef wind_init(struct HX711 *sensorX, struct HX711 *sensorY){
+	HAL_StatusTypeDef ret;
+	ret = hx711_init(sensorX);
+	if(ret != HAL_OK){
+		return ret;
 	}
-}
-
-HAL_StatusTypeDef windSensor_tara(uint16_t zeroCycles){
-	int32_t zeroWeight = 0;
-
-	windSensor_readyForRetrieval();
-	zeroWeight = windSensor_read();
-	for(uint16_t i=0; i<zeroCycles; i++){
-		zeroWeight += windSensor_read();
-		zeroWeight = zeroWeight / 2;
+	ret = hx711_init(sensorY);
+	if(ret != HAL_OK){
+		return ret;
 	}
-
-//	windSensor.zeroWeight = zeroWeight;
+	HAL_Delay(100);
+	hx711_turnOn(sensorX);
+	hx711_tara(sensorX, 30);
+	hx711_turnOn(sensorY);
+	hx711_tara(sensorY, 30);
+	wind_collect(sensorX, sensorY, 0, ARRAY_SIZE);
 	return HAL_OK;
 }
 
-int32_t windSensor_read(void){
-	uint32_t data = 0;
+/*
+ * Collect single measurements:
+ * @param *sensorX - pointer to first HX711 sensor
+ * @param *sensorY - pointer to second HX711 sensor
+ * @param offset - start address in dataArray
+ * @param count
+ * */
+void wind_collect(struct HX711 *sensorX, struct HX711 *sensorY, uint16_t offset, uint16_t count) {
+	for (uint16_t q = offset; q < (offset + count); q++) {
+		windSensor.dataArrayX[q] = hx711_getWeight(sensorX);
+		windSensor.dataArrayY[q] = hx711_getWeight(sensorY);
+	}
+}
 
-	windSensor_readyForRetrieval();
-	for (uint8_t i = 0; i < 24; i++) {
-		HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 1);
-		delayUs(1);
-		HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 0);
-		if(HAL_GPIO_ReadPin(windSensor.xDtPort, windSensor.xDtPin) == 1){
-			data |= (1 << (24-i));
+/*
+ * Function calculate collected wind measurements:
+ * @param *sensorX - pointer to first HX711 sensor
+ * @param *sensorY - pointer to second HX711 sensor
+ * @retval flag -> need calibration
+ * */
+uint8_t wind_measure(struct HX711 *sensorX, struct HX711 *sensorY) {
+	int32_t bufArray[80];
+	uint16_t dataSize = sizeof(windSensor.dataArrayX) / sizeof(windSensor.dataArrayX[0]);
+	uint8_t needCalibFlag = 0;
+
+	memcpy(bufArray, windSensor.dataArrayX, dataSize * sizeof(int32_t));
+	windSensor.windXavg = calc_wind(bufArray, dataSize);
+	int32_t fluctuation = (bufArray[79] - bufArray[0]);
+	if(fluctuation < FLUCTUATION_NO_WIND && (windSensor.windYavg > NO_WIND_OK_MEASUREMENT || windSensor.windXavg < -NO_WIND_OK_MEASUREMENT)){
+	  //need calibration
+		needCalibFlag = 1;
+	}
+
+	memcpy(bufArray, windSensor.dataArrayY, dataSize * sizeof(int32_t));
+	windSensor.windYavg = calc_wind(bufArray, dataSize);
+	fluctuation = (bufArray[79] - bufArray[0]);
+	if(fluctuation < FLUCTUATION_NO_WIND && (windSensor.windYavg > NO_WIND_OK_MEASUREMENT || windSensor.windYavg < -NO_WIND_OK_MEASUREMENT)){
+	  //need calibration
+	  needCalibFlag = 1;
+	}
+	memmove(windSensor.dataArrayX, windSensor.dataArrayX + 10, (size_t) (70 * sizeof(int32_t)));
+	memmove(windSensor.dataArrayY, windSensor.dataArrayY + 10, (size_t) (70 * sizeof(int32_t)));
+
+	return needCalibFlag;
+}
+
+static int32_t calc_wind(int32_t *dataArray, uint16_t arraySize) {
+	quickSort(dataArray, 0, arraySize - 1);
+	int32_t avrArray[arraySize / 2];
+	for (uint8_t i = 0; i < (arraySize / 2); i++) {
+		avrArray[i] = dataArray[i] + dataArray[(arraySize - 1) - i];
+	}
+	return calc_average(avrArray, arraySize / 2);
+}
+
+static void swap(int32_t *a, int32_t *b) {
+	int32_t temp = *a;
+	*a = *b;
+	*b = temp;
+}
+
+static int partition(int32_t arr[], int low, int high) {
+	int32_t pivot = arr[high];
+	int i = (low - 1);
+
+	for (int j = low; j <= high - 1; j++) {
+		if (arr[j] < pivot) {
+			i++;
+			swap(&arr[i], &arr[j]);
 		}
-		delayUs(1);
 	}
-	HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 1);
-	delayUs(1);
-	HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 0);
-	if (data & 0x800000) {
-		data = data | 0xFF000000;
+	swap(&arr[i + 1], &arr[high]);
+	return (i + 1);
+}
+
+void quickSort(int32_t arr[], int low, int high) {
+	if (low < high) {
+		int pi = partition(arr, low, high);
+		quickSort(arr, low, pi - 1);
+		quickSort(arr, pi + 1, high);
 	}
-	return data;
 }
 
-int32_t windSensor_getWeight(void){
-	int32_t weight = windSensor_read();
-//	return weight - windSensor.zeroWeight;
-}
-
-void windSensor_turnOff(void){
-	HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 1);
-}
-
-void windSensor_turnOn(void){
-	int32_t data;
-
-	windSensor_readyForRetrieval();
-	data = windSensor_read();
-	HAL_Delay(1);
-}
-
-HAL_StatusTypeDef windSensor_readyForRetrieval(void){
-	uint16_t timeout = 0;
-
-	HAL_GPIO_WritePin(windSensor.xSckPort, windSensor.xSckPin, 0);
-	while(HAL_GPIO_ReadPin(windSensor.xDtPort, windSensor.xDtPin) == 1){ //check data readiness
-		delayUs(1);
-		timeout++;
-		if(timeout > 60000){
-			return HAL_ERROR;
+static int32_t calc_average(int32_t *dataArray, uint16_t arraySize) {
+	int32_t avgVal = dataArray[0];
+	for (uint16_t i = 1; i < arraySize; i++) {
+		if (dataArray[i] != 0) {
+			avgVal = (avgVal + dataArray[i]) / 2;
 		}
 	}
-	return HAL_OK;
+	return avgVal;
 }
-
-//uint32_t getUs(void){
-//	uint32_t usTicks = HAL_RCC_GetSysClockFreq() / 1000000;
-//	register uint32_t ms, cycle_cnt;
-//	do {
-//		ms = HAL_GetTick();
-//		cycle_cnt = SysTick->VAL;
-//	} while (ms != HAL_GetTick());
-//	return (ms * 1000) + (usTicks * 1000 - cycle_cnt) / usTicks;
-//}
-//
-//void delayUs(uint16_t micros){
-//	uint32_t start = getUs();
-//	while (getUs() - start < (uint32_t) micros) {
-//		asm("nop");
-//	}
-//}

@@ -25,6 +25,7 @@
 #include "hx711.h"
 #include <string.h>
 #include <stdio.h>
+#include "windSensor.h"
 
 #ifdef USB_ENABLED
 	#include "usbd_cdc_if.h"
@@ -40,8 +41,6 @@
 /* USER CODE BEGIN PD */
 #define USB_ENABLED
 
-#define FLUCTUATION_NO_WIND 1200 //measurement fluctuation when no wind
-#define NO_WIND_OK_MEASUREMENT 500 //max measurement without wind. Over that required calibration
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -52,10 +51,10 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+extern struct WINDSENSOR windSensor;
 uint8_t txBuffer[250];
 uint8_t txtBuf[40];
-int32_t windX, windY;
-int32_t windXavg, windYavg;
+
 
 uint16_t txLength = 0;
 uint16_t messLength = 0;
@@ -70,123 +69,21 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void swap(int32_t *a, int32_t *b) {
-    int32_t temp = *a;
-    *a = *b;
-    *b = temp;
-}
+void send_dataUSB(void){
+	txLength = 0;
+	messLength = sprintf((char*)txtBuf, "{\"val\":[");
 
-int partition(int32_t arr[], int low, int high) {
-    int32_t pivot = arr[high];
-    int i = (low - 1);
-
-    for (int j = low; j <= high - 1; j++) {
-        if (arr[j] < pivot) {
-            i++;
-            swap(&arr[i], &arr[j]);
-        }
-    }
-    swap(&arr[i + 1], &arr[high]);
-    return (i + 1);
-}
-
-void quickSort(int32_t arr[], int low, int high) {
-    if (low < high) {
-        int pi = partition(arr, low, high);
-        quickSort(arr, low, pi - 1);
-        quickSort(arr, pi + 1, high);
-    }
-}
-
-int32_t calc_average(int32_t *dataArray, uint16_t arraySize){
-	int32_t avgVal = dataArray[0];
-	for(uint16_t i=1; i<arraySize; i++){
-		if(dataArray[i] != 0){
-			avgVal = (avgVal + dataArray[i]) / 2;
-		}
+	memcpy(txBuffer, txtBuf, messLength);
+	txLength += messLength;
+	for(uint8_t i=70; i<78; i++){
+	  messLength = sprintf((char*)(txtBuf), "{\"X\":%i,\"Y\":%i},", (int)windSensor.dataArrayX[i], (int)windSensor.dataArrayY[i]);
+	  memcpy(txBuffer + txLength, txtBuf, messLength);
+	  txLength += messLength;
 	}
-	return avgVal;
-}
-
-int32_t calc_wind(int32_t *dataArray, uint16_t arraySize){
-	quickSort(dataArray, 0, arraySize-1);
-	int32_t avrArray[arraySize/2];
-	for(uint8_t i=0; i<(arraySize/2); i++){
-		avrArray[i] = dataArray[i] + dataArray[(arraySize - 1)-i];
-	}
-	return calc_average(avrArray, arraySize/2);
-}
-
-
-void wind_measure(struct HX711 *sensorX, struct HX711 *sensorY){
-	int32_t bufArray[80];
-	int32_t dataArrayX[80];
-	int32_t dataArrayY[80];
-	uint16_t dataSize = sizeof(dataArrayX) / sizeof(dataArrayX[0]);
-	uint8_t needTaraFlag = 0;
-	for(uint16_t q=0; q<80; q++){
-	  windX = hx711_getWeight(sensorX);
-	  dataArrayX[q] = windX;
-	  windY = hx711_getWeight(sensorY);
-	  dataArrayY[q] = windY;
-	}
-	 while (1)
-		{
-		  for(uint16_t q=70; q<80; q++){
-			  windX = hx711_getWeight(sensorX);
-			  dataArrayX[q] = windX;
-			  windY = hx711_getWeight(sensorY);
-			  dataArrayY[q] = windY;
-		  }
-		  txLength = 0;
-		  messLength = sprintf((char*)txtBuf, "{\"val\":[");
-
-		  memcpy(txBuffer, txtBuf, messLength);
-		  txLength += messLength;
-
-		  for(uint8_t i=70; i<78; i++){
-			  windX = dataArrayX[i];
-			  windY = dataArrayY[i];
-			  messLength = sprintf((char*)(txtBuf), "{\"X\":%i,\"Y\":%i},", (int)windX, (int)windY);
-			  memcpy(txBuffer + txLength, txtBuf, messLength);
-			  txLength += messLength;
-		  }
-
-		  memcpy(bufArray, dataArrayX, dataSize * sizeof(int32_t));
-		  windXavg = calc_wind(bufArray, dataSize);
-		  int32_t fluctuation = (bufArray[79] - bufArray[0]);
-		  if(fluctuation < FLUCTUATION_NO_WIND && (windXavg > NO_WIND_OK_MEASUREMENT || windXavg < -NO_WIND_OK_MEASUREMENT)){
-			  //need calibration
-			  needTaraFlag = 1;
-		  }
-
-		  memcpy(bufArray, dataArrayY, dataSize * sizeof(int32_t));
-		  windYavg = calc_wind(bufArray, dataSize);
-		  fluctuation = (bufArray[79] - bufArray[0]);
-		  if(fluctuation < FLUCTUATION_NO_WIND && (windYavg > NO_WIND_OK_MEASUREMENT || windYavg < -NO_WIND_OK_MEASUREMENT)){
-			  //need calibration
-			  needTaraFlag = 1;
-		  }
-
-		  messLength = sprintf((char*)txtBuf, "], \"avg\":{\"X\":%i,\"Y\":%i}}\n", (int)windXavg, (int)windYavg);
-		  memcpy(txBuffer + txLength-1, txtBuf, messLength);
-		  txLength += messLength-1;
-		#ifdef USB_ENABLED
-		  CDC_Transmit_FS(txBuffer, txLength);
-		#endif
-
-		  memmove(dataArrayX, dataArrayX+10, (size_t)(70 * sizeof(int32_t)));
-		  memmove(dataArrayY, dataArrayY+10, (size_t)(70 * sizeof(int32_t)));
-
-		  //sensor calibration
-		  if(needTaraFlag == 1){
-			  hx711_tara(sensorX, 30);
-			  hx711_tara(sensorY, 30);
-			  needTaraFlag = 0;
-		  }
-
-		  delayUs(1000);
-		}
+	messLength = sprintf((char*)txtBuf, "], \"avg\":{\"X\":%i,\"Y\":%i}}\n", (int)windSensor.windXavg, (int)windSensor.windYavg);
+	memcpy(txBuffer + txLength-1, txtBuf, messLength);
+	txLength += messLength-1;
+	CDC_Transmit_FS(txBuffer, txLength);
 }
 /* USER CODE END 0 */
 
@@ -197,7 +94,7 @@ void wind_measure(struct HX711 *sensorX, struct HX711 *sensorY){
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+	uint8_t needCalibFlag = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -222,22 +119,24 @@ int main(void)
   /* USER CODE BEGIN 2 */
   struct HX711 windSensX = {X_HX711_DT_GPIO_Port, X_HX711_DT_Pin, X_HX711_SCK_GPIO_Port, X_HX711_SCK_Pin, 0};
   struct HX711 windSensY = {Y_HX711_DT_GPIO_Port, Y_HX711_DT_Pin, Y_HX711_SCK_GPIO_Port, Y_HX711_SCK_Pin, 0};
-  hx711_init(&windSensX);
-  hx711_init(&windSensY);
-  HAL_Delay(100);
-  hx711_turnOn(&windSensX);
-  hx711_tara(&windSensX, 30);
-  hx711_turnOn(&windSensY);
-  hx711_tara(&windSensY, 30);
-
-  wind_measure(&windSensX, &windSensY);
+  wind_init(&windSensX, &windSensY);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  delayUs(1000);
+	  wind_collect(&windSensX, &windSensY, 70, 10);
+	  needCalibFlag = wind_measure(&windSensX, &windSensY);
+
+	#ifdef USB_ENABLED
+	  send_dataUSB();
+	#endif
+
+	  if(needCalibFlag == 1){
+		  hx711_tara(&windSensX, 30);
+		  hx711_tara(&windSensY, 30);
+	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

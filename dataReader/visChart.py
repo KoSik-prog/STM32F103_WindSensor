@@ -20,7 +20,7 @@ class CONNECT:
             readThread = threading.Thread(target=self.read)
             readThread.start()
 
-            time.sleep(.5)
+            time.sleep(1)
             self.zeroPoint = [self.global_ptX[0], self.global_ptY[0]]
 
             ani = FuncAnimation(plt.gcf(), self.draw_chart, interval=100, save_count=10)
