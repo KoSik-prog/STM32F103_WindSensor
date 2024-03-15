@@ -23,10 +23,6 @@ In the "dataReader" directory, you can find Python scripts for visualizing measu
         wind_collect(&windSensX, &windSensY, 70, 10);
         needCalibFlag = wind_measure(&windSensX, &windSensY);
 
-    #ifdef USB_ENABLED
-        send_dataUSB();
-    #endif
-
         if(needCalibFlag == 1){
             hx711_tara(&windSensX, 30);
             hx711_tara(&windSensY, 30);
