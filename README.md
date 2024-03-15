@@ -13,10 +13,10 @@ In the "dataReader" directory, you can find Python scripts for visualizing measu
 
 <h3>INIT:</h3>
 
-struct HX711 windSensX = {X_HX711_DT_GPIO_Port, X_HX711_DT_Pin, X_HX711_SCK_GPIO_Port, X_HX711_SCK_Pin, 0};
-struct HX711 windSensY = {Y_HX711_DT_GPIO_Port, Y_HX711_DT_Pin, Y_HX711_SCK_GPIO_Port, Y_HX711_SCK_Pin, 0};
+    struct HX711 windSensX = {X_HX711_DT_GPIO_Port, X_HX711_DT_Pin, X_HX711_SCK_GPIO_Port, X_HX711_SCK_Pin, 0};
+    struct HX711 windSensY = {Y_HX711_DT_GPIO_Port, Y_HX711_DT_Pin, Y_HX711_SCK_GPIO_Port, Y_HX711_SCK_Pin, 0};
 
-wind_init(&windSensX, &windSensY);
+    wind_init(&windSensX, &windSensY);
 
 <h3>READ:</h3>
 
